@@ -8,12 +8,24 @@ extern crate slog_async;
 use slog::*;
 
 use std::net::{ TcpListener, TcpStream };
-use std::io::*;
 
-extern crate kvs;
-use kvs::{ Result, KvStore };
+use std::io::prelude::*;
+use std::fs::{ OpenOptions };
 
 use failure::err_msg;
+
+extern crate kvs;
+use kvs::{ 
+    Result, 
+    KvStore,
+    KvsEngine,
+    network::{
+        Operation,
+        TcpMessage,
+        Response,
+        ResponseStatus
+    }
+};
 
 fn initialize_root_logger() -> Logger {
     let decorator = slog_term::TermDecorator::new().stderr().build();
@@ -45,6 +57,22 @@ fn main() -> Result<()> {
     log = log.new(o!("address" => String::from(address), "engine" => String::from(engine)));
     info!(log, "Command line arguments read");
 
+    let mut engine_file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .append(true)
+        .truncate(false)
+        .open("./engine")?;
+    let buf = &mut String::new();
+    engine_file.read_to_string(buf)?;
+
+    if buf != engine && !buf.is_empty() {
+        return Err(err_msg("Server cannot be started in a different engine than before"));
+    } else {
+        engine_file.write_all(engine.as_bytes())?;
+    }
+
     info!(log, "Starting TCP server");
     let listener = TcpListener::bind(address)?;
     info!(log, "Waiting for connections...");
@@ -66,113 +94,30 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn handle_connection(mut log: Logger, mut stream: TcpStream, store: &mut KvStore) -> Result<()> {
+fn handle_connection(log: Logger, stream: TcpStream, store: &mut KvStore) -> Result<()> {
 
-    let mut br = BufReader::new(stream.try_clone()?);
-
-    let mut request = String::new();
-    br.read_line(&mut request)?;
-
-    log = log.new(o!("net_request" => request.clone()));
-    info!(log, "Operation recieved from client");
-
-    let operation = parse_request(log.clone(), request)?;
+    let operation = Operation::read_from_stream(log.clone(), stream.try_clone()?)?;
 
     let op_result = handle_operation(log.clone(), operation, store);
 
     let response = match op_result {
-        Ok(Some(value)) => {
-            format!("OK {}", value)
-        },
-        Ok(None) => {
-            String::from("OK")
+        Ok(data) => {
+            Response {
+                status: ResponseStatus::Ok,
+                data
+            }
         },
         Err(_) => {
-            String::from("FAIL")
+            Response {
+                status: ResponseStatus::Fail,
+                data: None
+            }
         }
     };
-    log = log.new(o!("response" => response.clone()));
-    writeln!(stream, "{}", response)?;
-    info!(log, "Response sent to client");
+
+    response.write_to_stream(log, stream)?;
 
     Ok(())
-}
-
-#[derive(Debug, Clone)]
-enum Operation {
-    Set(String, String),
-    Get(String),
-    Remove(String)
-}
-
-impl KV for Operation {
-    fn serialize(&self, _record: &Record, serializer: &mut Serializer) -> slog::Result<()> {
-        match self {
-            Operation::Set(key, value) => {
-
-                serializer.emit_str("parsed_operation", &format!("Set {}->{}", key, value))?;
-                
-            }
-            Operation::Get(key) => {
-
-                serializer.emit_str("parsed_operation", &format!("Get {}", key))?;
-                
-            }
-            Operation::Remove(key) => {
-
-                serializer.emit_str("parsed_operation", &format!("Remove {}", key))?;
-                
-            }
-        }
-        Ok(())
-    }
-}
-
-fn parse_request(mut log: Logger, request: String) -> Result<Operation> {
-    let request = remove_newline_from_end(request);
-    let v: Vec<&str> = request.split(' ').collect();
-
-    if v[0] == "set" {
-        
-        let key = v[1];
-        let value = v[2];
-        let op = Operation::Set(String::from(key), String::from(value));
-        log = log.new(o!(op.clone()));
-        info!(log, "Request parsed");
-        Ok(op)
-        
-
-    } else if v[0] == "get" {
-
-        let key = v[1];
-        let op = Operation::Get(String::from(key));
-        log = log.new(o!(op.clone()));
-        info!(log, "Request parsed");
-        Ok(op)
-
-    } else if v[0] == "rm" {
-
-        let key = v[1];
-        let op = Operation::Remove(String::from(key));
-        log = log.new(o!(op.clone()));
-        info!(log, "Request parsed");
-        Ok(op)
-
-    } else {
-        Err(err_msg("Request does not start with a valid operation code"))
-    }
-}
-
-fn remove_newline_from_end(string: String) -> String {
-    let len = string.len();
-
-    let halves = string.split_at(len - 1);
-
-    if halves.1 == "\n" {
-        String::from(halves.0)
-    } else {
-        string
-    }
 }
 
 fn handle_operation(log: Logger, operation: Operation, store: &mut KvStore) -> Result<Option<String>> {

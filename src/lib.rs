@@ -4,6 +4,8 @@
 mod engine;
 pub use engine::KvsEngine;
 
+pub mod network;
+
 use std::path;
 use std::path::PathBuf;
 use serde::{Serialize, Deserialize};
@@ -161,19 +163,6 @@ impl KvStore {
         }
     }
 
-    /// Sets a value to a key in the store, will add a new K/V entry if none exists,
-    /// otherwise will overwrite an existing entry
-    pub fn set(&mut self, k: String, v: String) -> Result<()> {
-        let command = Command::Set(Pair { k, v });
-
-        self.cache.push(command);
-
-        self.raise_cached_commands(1)?;
-
-        Ok(())
-
-    }
-
     fn raise_cached_commands(&mut self, amount: i32) -> Result<()> {
 
         self.cached_commands += amount;
@@ -209,53 +198,6 @@ impl KvStore {
 
     }
 
-    /// Get the value for a key in the store. Will return Some(value) if it exists,
-    /// otherwise will return None
-    pub fn get(&mut self, k: String) -> Result<Option<String>> {
-        
-        if let Some(offset) = self.index.get(&k) {
-
-            let br = self.open_reader()?;
-
-            let command_json = br.lines().nth(*offset).ok_or_else(|| err_msg("File pointer in index points to non-existant command"))??;
-
-            let command: Command = serde_json::from_str(&command_json)?;
-
-            match command {
-                Command::Set(pair) => {
-                    return Ok(Some(pair.v));
-                },
-                Command::Remove(_) => {
-                    return Err(err_msg("File pointer in index points to remove command"));
-                }
-            }
-
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Remove a K/V entry from the store, will do nothing if the entry doesn't exist
-    pub fn remove(&mut self, k: String) -> Result<()> {
-        
-        let entry_opt = self.get(k.clone())?;
-
-        if entry_opt.is_some() {
-
-            let command = Command::Remove(k);
-            self.cache.push(command);
-
-            self.raise_cached_commands(1)?;
-
-            Ok(())
-
-        } else {
-            Err(err_msg("Key not found"))
-        }
-
-        
-    }
-
     fn open_writer(&self, append: bool) -> Result<BufWriter<File>> {
         let f = OpenOptions::new()
         .read(false)
@@ -283,6 +225,65 @@ impl Drop for KvStore {
 
     fn drop(&mut self) {
         self.write_cached_to_log().expect("Could not save cache to disk");
+    }
+
+}
+
+impl KvsEngine for KvStore {
+
+    fn set(&mut self, k: String, v: String) -> Result<()> {
+        let command = Command::Set(Pair { k, v });
+
+        self.cache.push(command);
+
+        self.raise_cached_commands(1)?;
+
+        Ok(())
+
+    }
+
+    fn get(&mut self, k: String) -> Result<Option<String>> {
+        
+        if let Some(offset) = self.index.get(&k) {
+
+            let br = self.open_reader()?;
+
+            let command_json = br.lines().nth(*offset).ok_or_else(|| err_msg("File pointer in index points to non-existant command"))??;
+
+            let command: Command = serde_json::from_str(&command_json)?;
+
+            match command {
+                Command::Set(pair) => {
+                    return Ok(Some(pair.v));
+                },
+                Command::Remove(_) => {
+                    return Err(err_msg("File pointer in index points to remove command"));
+                }
+            }
+
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn remove(&mut self, k: String) -> Result<()> {
+        
+        let entry_opt = self.get(k.clone())?;
+
+        if entry_opt.is_some() {
+
+            let command = Command::Remove(k);
+            self.cache.push(command);
+
+            self.raise_cached_commands(1)?;
+
+            Ok(())
+
+        } else {
+            Err(err_msg("Key not found"))
+        }
+
+        
     }
 
 }

@@ -8,11 +8,18 @@ extern crate slog_async;
 use slog::*;
 
 extern crate kvs;
-use kvs::{ Result };
+use kvs::{ 
+    Result,
+    network::{ 
+        Operation,
+        TcpMessage,
+        Response,
+        ResponseStatus
+    }
+};
 
 use std::net::{ TcpStream };
 use std::time::Duration;
-use std::io::*;
 
 use failure::err_msg;
 
@@ -65,12 +72,12 @@ fn main() -> Result<()>{
 
         let stream = open_stream(log.clone(), matches)?;
 
-        let net_command = format!("set {} {}", key, value);
-        write_command_to_stream(log.clone(), stream.try_clone()?, net_command)?;
+        let operation = Operation::Set(String::from(key), String::from(value));
+        operation.write_to_stream(log.clone(), stream.try_clone()?)?;
 
-        let response = read_response_from_stream(log.clone(), stream.try_clone()?)?;
+        let response = Response::read_from_stream(log, stream)?;
 
-        if response == "OK\n" {
+        if response.status == ResponseStatus::Ok {
             Ok(())
         } else {
             Err(err_msg("Error response recieved from server"))
@@ -86,19 +93,25 @@ fn main() -> Result<()>{
 
         let stream = open_stream(log.clone(), matches)?;
 
-        let net_command = format!("get {}", key);
-        write_command_to_stream(log.clone(), stream.try_clone()?, net_command)?;
+        let operation = Operation::Get(String::from(key));
+        operation.write_to_stream(log.clone(), stream.try_clone()?)?;
 
-        let response = read_response_from_stream(log.clone(), stream.try_clone()?)?;
-        let v: Vec<&str> = response.split(' ').collect();
+        let response = Response::read_from_stream(log, stream)?;
 
-        if v[0] == "OK" {
-            let value = v[1];
-            print!("{}", value);
-            Ok(())
+        if response.status == ResponseStatus::Ok {
+
+            match response.data {
+                Some(value) => {
+                    print!("{}", value);
+                    Ok(())
+                },
+                None => {
+                    println!("Key not found");
+                    Ok(())
+                }
+            }
         } else {
-            println!("Key not found");
-            Ok(())
+            std::process::exit(1);
         }
 
         
@@ -112,11 +125,11 @@ fn main() -> Result<()>{
 
         let stream = open_stream(log.clone(), matches)?;
 
-        let net_command = format!("rm {}", key);
-        write_command_to_stream(log.clone(), stream.try_clone()?, net_command)?;
+        let operation = Operation::Remove(String::from(key));
+        operation.write_to_stream(log.clone(), stream.try_clone()?)?;
 
-        let response = read_response_from_stream(log.clone(), stream.try_clone()?)?;
-        if response == "OK\n" {
+        let response = Response::read_from_stream(log, stream)?;
+        if response.status == ResponseStatus::Ok {
             Ok(())
         } else {
             eprintln!("Key not found");
@@ -141,23 +154,4 @@ fn open_stream(mut log: Logger, matches: &ArgMatches) -> Result<TcpStream> {
     info!(log, "TCP connection established");
 
     Ok(stream)
-}
-
-fn write_command_to_stream(mut log: Logger, mut stream: TcpStream, net_command: String) -> Result<()> {
-    log = log.new(o!("net_command" => net_command.clone()));
-    info!(log, "Sending command to server");
-    writeln!(stream, "{}", net_command)?;
-    info!(log, "Command sent, waiting for response");
-    Ok(())
-}
-
-fn read_response_from_stream(mut log: Logger, stream: TcpStream) -> Result<String> {
-
-    let mut br = BufReader::new(stream);
-    let mut response = String::new();
-    br.read_line(&mut response)?;
-
-    log = log.new(o!("response" => response.clone()));
-    info!(log, "Response recieved from server");
-    Ok(response)
 }

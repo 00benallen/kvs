@@ -24,3 +24,20 @@ rand = "0.6.5"
 tempfile = "3.0.7"
 walkdir = "2.2.7"
 
+[lib]
+bench = false
+
+[[bin]]
+name = "kvs-server"
+path = "src/bin/kvs-server.rs"
+bench = false
+
+[[bin]]
+name = "kvs-client"
+path = "src/bin/kvs-client.rs"
+bench = false
+
+[[bench]]
+name = "benches"
+harness = false
+
