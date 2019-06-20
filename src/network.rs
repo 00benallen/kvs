@@ -14,18 +14,33 @@ const SET_CODE: &str = "set";
 const GET_CODE: &str = "get";
 const REMOVE_CODE: &str = "rm";
 
+/// Trait defining a message to be sent between KvsServer and KvsClient, ensures the object is easy to use
 pub trait TcpMessage {
+
+    /// Create an instance from a String
     fn from_text(log: Logger, req: String) -> Result<Self> where Self: Sized;
+
+    /// Convert this instance to a string
     fn to_text(&self) -> String;
+
+    /// Write this instance to the given `TcpStream`
     fn write_to_stream(&self, log: Logger, stream: TcpStream) -> Result<()>;
+
+    /// Read an instance out of a `TcpStream`
     fn read_from_stream(log: Logger, stream: TcpStream) -> Result<Self> where Self: Sized;
 }
 
-
+/// Operations the KvsClient sends to the KvsServer
 #[derive(Debug, Clone)]
 pub enum Operation {
+
+    /// Set a new Key/Value pair
     Set(String, String),
+
+    /// Retrieve the value for a given key
     Get(String),
+
+    /// Remove a Key/Value pair
     Remove(String)
 }
 
@@ -137,13 +152,20 @@ impl KV for Operation {
     }
 }
 
+/// Status for a Response sent back by the KvsServer
 #[derive(PartialEq)]
 pub enum ResponseStatus {
+
+    /// Operation was successful, requested data should be in `Response`
     Ok,
+
+    /// Operation failed
     Fail
 }
 
 impl ResponseStatus {
+
+    /// Create a response status from a String
     pub fn from_text(text: String) -> Result<ResponseStatus> {
         let trimmed = remove_newline_from_end(text);
         if trimmed == "OK" {
@@ -156,8 +178,11 @@ impl ResponseStatus {
     }
 }
 
+/// Response the KvsServer send back to the client
 pub struct Response {
+    /// Status of the response, see `ResponseStatus` for details
     pub status: ResponseStatus,
+    /// Data requested by client, will be None depending on the operation sent
     pub data: Option<String>
 }
 

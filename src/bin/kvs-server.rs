@@ -19,6 +19,7 @@ use kvs::{
     Result, 
     KvStore,
     KvsEngine,
+    SledKvsEngine,
     network::{
         Operation,
         TcpMessage,
@@ -73,12 +74,22 @@ fn main() -> Result<()> {
         engine_file.write_all(engine.as_bytes())?;
     }
 
+    let mut store: Box<dyn KvsEngine> = match engine {
+        "kvs" => {
+            Box::new(KvStore::new()?)
+        },
+        "sled" => {
+            Box::new(SledKvsEngine::new()?)
+        }
+        _ => {
+            return Err(err_msg("Invalid engine"));
+        }
+    };
+    info!(log, "Initialized store");
+
     info!(log, "Starting TCP server");
     let listener = TcpListener::bind(address)?;
     info!(log, "Waiting for connections...");
-
-    let mut store = KvStore::new()?;
-    info!(log, "Initialized KvStore");
 
     for stream in listener.incoming() {
         let stream: TcpStream = stream?;
@@ -87,14 +98,14 @@ fn main() -> Result<()> {
         log = log.new(o!("client_addr" => client_addr));
         info!(log, "TCP connection established");
 
-        handle_connection(log.clone(), stream, &mut store)?;
+        handle_connection(log.clone(), stream, store.as_mut())?;
     }
 
     info!(log, "Server terminating");
     Ok(())
 }
 
-fn handle_connection(log: Logger, stream: TcpStream, store: &mut KvStore) -> Result<()> {
+fn handle_connection(log: Logger, stream: TcpStream, store: &mut KvsEngine) -> Result<()> {
 
     let operation = Operation::read_from_stream(log.clone(), stream.try_clone()?)?;
 
@@ -120,7 +131,7 @@ fn handle_connection(log: Logger, stream: TcpStream, store: &mut KvStore) -> Res
     Ok(())
 }
 
-fn handle_operation(log: Logger, operation: Operation, store: &mut KvStore) -> Result<Option<String>> {
+fn handle_operation(log: Logger, operation: Operation, store: &mut KvsEngine) -> Result<Option<String>> {
 
     match operation {
         Operation::Set(key, value) => {

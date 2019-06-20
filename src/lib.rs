@@ -1,9 +1,11 @@
 //! KvStore library for use by the kvs CLI
-//#![deny(missing_docs)]
+#![deny(missing_docs)]
 
 mod engine;
 pub use engine::KvsEngine;
+pub use engine::SledKvsEngine;
 
+/// Module contains structs which define the network protocol between KvsClient and KvsServer
 pub mod network;
 
 use std::path;
