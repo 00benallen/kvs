@@ -1,12 +1,18 @@
 //! KvStore library for use by the kvs CLI
-#![deny(missing_docs)]
+//#![deny(missing_docs)]
 
 mod engine;
+use std::sync::{
+    Arc,
+    Mutex
+};
 pub use engine::KvsEngine;
 pub use engine::SledKvsEngine;
 
 /// Module contains structs which define the network protocol between KvsClient and KvsServer
 pub mod network;
+
+pub mod thread_pool;
 
 use std::path;
 use std::path::PathBuf;
@@ -21,14 +27,14 @@ use std::collections::HashMap;
 pub type Result<T> = std::result::Result<T, failure::Error>;
 
 /// Represents a Key/Value Pair, elementary data stored by the KvStore
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Pair {
     k: String,
     v: String,
 }
 
 /// Commands which KvStore enters into log
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Command {
     /// Set the value of a Pair, or add a new one
     Set(Pair),
@@ -37,13 +43,11 @@ pub enum Command {
     Remove(String)
 }
 
-/// Store for storing key value pairs
+/// Store for storing key value pair
+#[derive(Clone)]
 pub struct KvStore {
-    index: HashMap<String, usize>,
-    cache: Vec<Command>,
+    index: Arc<Mutex<HashMap<String, usize>>>,
     log_path: PathBuf,
-    cached_commands: i32,
-    cache_threshold: i32,
     log_threshold: i32
 }
 
@@ -70,11 +74,8 @@ impl KvStore {
         log_path.push("log.log");
 
         let mut store = KvStore { 
-            index: HashMap::new(),
-            cache: Vec::new(),
+            index: Arc::new(Mutex::new(HashMap::new())),
             log_path,
-            cached_commands: 0,
-            cache_threshold: 1,
             log_threshold: 500,
         };
         store.generate_index()?;
@@ -87,8 +88,9 @@ impl KvStore {
     fn generate_index(&mut self) -> Result<()> {
         let br = self.open_reader()?;
 
-        let index = &mut self.index;
-        let mut should_compact_log = false;
+        //TODO add back log compaction on its own thread
+        let index = &mut self.index.lock().unwrap();
+        // let mut should_compact_log = false;
         for (offset, line) in br.lines().enumerate() {
             let line = line?;
             let command = serde_json::from_str(&line)?;
@@ -101,104 +103,69 @@ impl KvStore {
                 }
             }
 
-            if offset > self.log_threshold as usize {
+            // if offset > self.log_threshold as usize {
 
-                should_compact_log = true;
+            //     should_compact_log = true;
 
-            }
+            // }
         }
 
-        if should_compact_log {
-            self.compact_log()?;
-        }
+        // if should_compact_log {
+        //     self.compact_log()?;
+        // }
 
         Ok(())
     }
 
-    fn compact_log(&mut self) -> Result<()> {
+    // fn compact_log(&mut self) -> Result<()> {
 
-        let br = self.open_reader()?;
+    //     let br = self.open_reader()?;
 
-        let mut new_log: Vec<Command> = Vec::new();
-        for line in br.lines() {
+    //     let mut new_log: Vec<Command> = Vec::new();
+    //     for line in br.lines() {
 
-            let line = line?;
-            let command: Command = serde_json::from_str(&line)?;
+    //         let line = line?;
+    //         let command: Command = serde_json::from_str(&line)?;
 
-            KvStore::add_or_replace_command_in_vec(&mut new_log, command);
-        }
+    //         KvStore::add_or_replace_command_in_vec(&mut new_log, command);
+    //     }
 
-        let mut bw = self.open_writer(false)?;
+    //     let mut bw = self.open_writer(false)?;
 
-        for command in new_log.iter() {
-            let command_json = serde_json::to_string(&command)?;
-            bw.write_all(command_json.as_bytes())?;
-            bw.write_all(b"\n")?;
-        }
-        bw.flush()?;
+    //     for command in new_log.iter() {
+    //         let command_json = serde_json::to_string(&command)?;
+    //         bw.write_all(command_json.as_bytes())?;
+    //         bw.write_all(b"\n")?;
+    //     }
+    //     bw.flush()?;
 
-        Ok(())
-    }
+    //     Ok(())
+    // }
 
-    fn add_or_replace_command_in_vec(vec: &mut Vec<Command>, command: Command) { 
-        match command {
-            Command::Set(pair) => {
-                let command_dup = Command::Set(Pair { k: pair.k.clone(), v: pair.v.clone() });
-                let index_opt = vec.iter().position(|c| {
-                    match c {
-                        Command::Set(pair_inner) => {
-                            pair.k == pair_inner.k
-                        },
-                        Command::Remove(_) => { false }
-                    }
-                });
-                if let Some(index) = index_opt {
-                    vec.remove(index);
-                    vec.push(command_dup);
-                } else {
-                    vec.push(command_dup);
-                }
-            },
-            Command::Remove(_) => {
-                vec.push(command);
-            }
-        }
-    }
-
-    fn raise_cached_commands(&mut self, amount: i32) -> Result<()> {
-
-        self.cached_commands += amount;
-
-        if self.cached_commands >= self.cache_threshold {
-            self.write_cached_to_log()?;
-        }
-        Ok(())
-    }
-
-    fn write_cached_to_log(&mut self) -> Result<()> {
-
-        if self.cached_commands <= 0 {
-            return Ok(());
-        }
-
-        let cached_start = self.cache.len() as i32 - self.cached_commands;
-        
-        let latest_index = (self.cache.len() - 1) as i32;
-        let mut bw = self.open_writer(true)?;
-        for i in cached_start..=latest_index {
-            let command = &self.cache[i as usize];
-            let command_json = serde_json::to_string(&command)?;
-            bw.write_all(command_json.as_bytes())?;
-            bw.write_all(b"\n")?;
-        }
-        bw.flush()?;
-        self.cached_commands = 0;
-        self.cache.clear();
-        self.generate_index()?;
-        
-        Ok(())
-
-    }
+    // fn add_or_replace_command_in_vec(vec: &mut Vec<Command>, command: Command) { 
+    //     match command {
+    //         Command::Set(pair) => {
+    //             let command_dup = Command::Set(Pair { k: pair.k.clone(), v: pair.v.clone() });
+    //             let index_opt = vec.iter().position(|c| {
+    //                 match c {
+    //                     Command::Set(pair_inner) => {
+    //                         pair.k == pair_inner.k
+    //                     },
+    //                     Command::Remove(_) => { false }
+    //                 }
+    //             });
+    //             if let Some(index) = index_opt {
+    //                 vec.remove(index);
+    //                 vec.push(command_dup);
+    //             } else {
+    //                 vec.push(command_dup);
+    //             }
+    //         },
+    //         Command::Remove(_) => {
+    //             vec.push(command);
+    //         }
+    //     }
+    // }
 
     fn open_writer(&self, append: bool) -> Result<BufWriter<File>> {
         let f = OpenOptions::new()
@@ -223,30 +190,30 @@ impl KvStore {
     }
 }
 
-impl Drop for KvStore {
-
-    fn drop(&mut self) {
-        self.write_cached_to_log().expect("Could not save cache to disk");
-    }
-
-}
-
 impl KvsEngine for KvStore {
 
-    fn set(&mut self, k: String, v: String) -> Result<()> {
+    fn set(&self, k: String, v: String) -> Result<()> {
         let command = Command::Set(Pair { k, v });
 
-        self.cache.push(command);
-
-        self.raise_cached_commands(1)?;
+        let mut bw = self.open_writer(true)?;
+        let command_json = serde_json::to_string(&command)?;
+        bw.write_all(command_json.as_bytes())?;
+        bw.write_all(b"\n")?;
+        bw.flush()?;
+        
+        // TODO see if this is necessary? Trying to get a mutable reference
+        // to the index, probably a better way
+        let mut clone = self.clone();
+        clone.generate_index()?;
 
         Ok(())
 
     }
 
-    fn get(&mut self, k: String) -> Result<Option<String>> {
+    fn get(&self, k: String) -> Result<Option<String>> {
         
-        if let Some(offset) = self.index.get(&k) {
+        let index = self.index.lock().unwrap();
+        if let Some(offset) = index.get(&k) {
 
             let br = self.open_reader()?;
 
@@ -268,24 +235,29 @@ impl KvsEngine for KvStore {
         }
     }
 
-    fn remove(&mut self, k: String) -> Result<()> {
+    fn remove(&self, k: String) -> Result<()> {
         
         let entry_opt = self.get(k.clone())?;
 
         if entry_opt.is_some() {
 
+            let mut bw = self.open_writer(true)?;
             let command = Command::Remove(k);
-            self.cache.push(command);
+            let command_json = serde_json::to_string(&command)?;
+            bw.write_all(command_json.as_bytes())?;
+            bw.write_all(b"\n")?;
+            bw.flush()?;
 
-            self.raise_cached_commands(1)?;
+            // TODO see if this is necessary? Trying to get a mutable reference
+            // to the index, probably a better way
+            let mut clone = self.clone();
+            clone.generate_index()?;
 
             Ok(())
 
         } else {
             Err(err_msg("Key not found"))
         }
-
-        
     }
 
 }

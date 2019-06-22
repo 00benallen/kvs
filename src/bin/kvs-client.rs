@@ -45,17 +45,17 @@ fn main() -> Result<()>{
             (about: "Set the value of a string key to a string")
             (@arg KEY: +required "The string key to store with")
             (@arg VALUE: +required "The value to store")
-            (@arg ADDRESS: --addr +required +takes_value "Address to send to")
+            (@arg ADDRESS: --addr +takes_value "Address to send to")
         )
         (@subcommand get =>
             (about: "Get the string value of a given string key")
             (@arg KEY: +required "The string key used to store the value")
-            (@arg ADDRESS: --addr +required +takes_value "Address to send to")
+            (@arg ADDRESS: --addr +takes_value "Address to send to")
         )
         (@subcommand rm =>
             (about: "Remove a given key")
             (@arg KEY: +required "The string key to store with")
-            (@arg ADDRESS: --addr +required +takes_value "Address to send to")
+            (@arg ADDRESS: --addr +takes_value "Address to send to")
         )
     )
     .get_matches();
@@ -143,7 +143,7 @@ fn main() -> Result<()>{
 }
 
 fn open_stream(mut log: Logger, matches: &ArgMatches) -> Result<TcpStream> {
-    let address = matches.value_of("ADDRESS").expect("Required field address not retrieved");
+    let address = matches.value_of("ADDRESS").unwrap_or("127.0.0.1:4000");
     log = log.new(o!("address" => String::from(address)));
     info!(log, "Server address read");
 

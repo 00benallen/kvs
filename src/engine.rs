@@ -1,18 +1,18 @@
 use crate::Result;
 
 /// Trait for defining the interface of a Key/Value store
-pub trait KvsEngine {
+pub trait KvsEngine: Send + 'static {
 
     /// Sets a value to a key in the store, will add a new K/V entry if none exists,
     /// otherwise will overwrite an existing entry
-    fn set(&mut self, k: String, v: String) -> Result<()>;
+    fn set(&self, k: String, v: String) -> Result<()>;
 
     /// Get the value for a key in the store. Will return Some(value) if it exists,
     /// otherwise will return None
-    fn get(&mut self, k: String) -> Result<Option<String>>;
+    fn get(&self, k: String) -> Result<Option<String>>;
 
     /// Remove a K/V entry from the store, will do nothing if the entry doesn't exist
-    fn remove(&mut self, k: String) -> Result<()>;
+    fn remove(&self, k: String) -> Result<()>;
     
 }
 
@@ -65,23 +65,22 @@ impl SledKvsEngine {
     }
 }
 
-impl KvsEngine for SledKvsEngine {
+// impl KvsEngine for SledKvsEngine {
 
-    fn set(&mut self, k: String, v: String) -> Result<()> {
-        self.tree.set(k.as_bytes(), v.as_bytes())?;
-        Ok(())
-    }
+//     fn set(&self, k: String, v: String) -> Result<()> {
+//         self.tree.set(k.as_bytes(), v.as_bytes())?;
+//         Ok(())
+//     }
 
-    fn get(&mut self, k: String) -> Result<Option<String>> {
-        let result = self.tree.get(k.as_bytes());
+//     fn get(&self, k: String) -> Result<Option<String>> {
+//         let result = self.tree.get(k.as_bytes());
 
-        //TODO cleanup, converting from annoying sled type to string was complex
-        SledKvsEngine::convert_sled_result(result)
-    }
+//         SledKvsEngine::convert_sled_result(result)
+//     }
 
-    fn remove(&mut self, k: String) -> Result<()> {
-        self.tree.del(k.as_bytes())?;
-        Ok(())
-    }
+//     fn remove(&self, k: String) -> Result<()> {
+//         self.tree.del(k.as_bytes())?;
+//         Ok(())
+//     }
 
-}
+// }

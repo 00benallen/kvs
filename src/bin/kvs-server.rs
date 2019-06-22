@@ -25,6 +25,10 @@ use kvs::{
         TcpMessage,
         Response,
         ResponseStatus
+    },
+    thread_pool::{
+        ThreadPool,
+        SharedQueueThreadPool
     }
 };
 
@@ -47,14 +51,14 @@ fn main() -> Result<()> {
         (version: version)
         (author: author)
         (about: about)
-        (@arg ADDRESS: --addr +required +takes_value "Address to listen to")
-        (@arg ENGINE: --engine +required +takes_value "Backend engine to use")
+        (@arg ADDRESS: --addr +takes_value "Address to listen to")
+        (@arg ENGINE: --engine +takes_value "Backend engine to use")
         
     )
     .get_matches();
 
-    let address = matches.value_of("ADDRESS").expect("Required field address not retrieved");
-    let engine = matches.value_of("ENGINE").expect("Required field engine not retrieved");
+    let address = matches.value_of("ADDRESS").unwrap_or("127.0.0.1:4000");
+    let engine = matches.value_of("ENGINE").unwrap_or("kvs");
     log = log.new(o!("address" => String::from(address), "engine" => String::from(engine)));
     info!(log, "Command line arguments read");
 
@@ -70,44 +74,49 @@ fn main() -> Result<()> {
 
     if buf != engine && !buf.is_empty() {
         return Err(err_msg("Server cannot be started in a different engine than before"));
-    } else {
+    } else if buf.is_empty() {
         engine_file.write_all(engine.as_bytes())?;
     }
 
-    let mut store: Box<dyn KvsEngine> = match engine {
-        "kvs" => {
-            Box::new(KvStore::new()?)
-        },
-        "sled" => {
-            Box::new(SledKvsEngine::new()?)
-        }
-        _ => {
-            return Err(err_msg("Invalid engine"));
-        }
-    };
+    // let mut store: Box<KvsEngine> = match engine {
+    //     "kvs" => {
+    //         Box::new(KvStore::new()?)
+    //     },
+    //     // "sled" => {
+    //     //     Box::new(SledKvsEngine::new()?)
+    //     // }
+    //     _ => {
+    //         return Err(err_msg("Invalid engine"));
+    //     }
+    // };
+    let store = KvStore::new()?;
     info!(log, "Initialized store");
 
     info!(log, "Starting TCP server");
     let listener = TcpListener::bind(address)?;
     info!(log, "Waiting for connections...");
 
+    let tp = SharedQueueThreadPool::new(4)?;
     for stream in listener.incoming() {
         let stream: TcpStream = stream?;
         let client_addr = stream.peer_addr()?;
 
         log = log.new(o!("client_addr" => client_addr));
         info!(log, "TCP connection established");
+        let store = store.clone();
+        let log = log.clone();
 
-        handle_connection(log.clone(), stream, store.as_mut())?;
+        tp.spawn(move || handle_connection(log, stream, store));
+        
     }
 
     info!(log, "Server terminating");
     Ok(())
 }
 
-fn handle_connection(log: Logger, stream: TcpStream, store: &mut KvsEngine) -> Result<()> {
+fn handle_connection(log: Logger, stream: TcpStream, store: KvStore) {
 
-    let operation = Operation::read_from_stream(log.clone(), stream.try_clone()?)?;
+    let operation = Operation::read_from_stream(log.clone(), stream.try_clone().unwrap()).unwrap();
 
     let op_result = handle_operation(log.clone(), operation, store);
 
@@ -126,12 +135,10 @@ fn handle_connection(log: Logger, stream: TcpStream, store: &mut KvsEngine) -> R
         }
     };
 
-    response.write_to_stream(log, stream)?;
-
-    Ok(())
+    response.write_to_stream(log, stream).unwrap();
 }
 
-fn handle_operation(log: Logger, operation: Operation, store: &mut KvsEngine) -> Result<Option<String>> {
+fn handle_operation(log: Logger, operation: Operation, store: KvStore) -> Result<Option<String>> {
 
     match operation {
         Operation::Set(key, value) => {
