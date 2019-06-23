@@ -14,6 +14,8 @@ use std::fs::{ OpenOptions };
 
 use failure::err_msg;
 
+extern crate num_cpus;
+
 extern crate kvs;
 use kvs::{ 
     Result, 
@@ -28,7 +30,9 @@ use kvs::{
     },
     thread_pool::{
         ThreadPool,
-        SharedQueueThreadPool
+        SharedQueueThreadPool,
+        NaiveThreadPool,
+        RayonThreadPool
     }
 };
 
@@ -53,7 +57,7 @@ fn main() -> Result<()> {
         (about: about)
         (@arg ADDRESS: --addr +takes_value "Address to listen to")
         (@arg ENGINE: --engine +takes_value "Backend engine to use")
-        
+        (@arg THREADPOOL: --tp +takes_value "Thread pool implementation to use")
     )
     .get_matches();
 
@@ -78,25 +82,43 @@ fn main() -> Result<()> {
         engine_file.write_all(engine.as_bytes())?;
     }
 
-    // let mut store: Box<KvsEngine> = match engine {
-    //     "kvs" => {
-    //         Box::new(KvStore::new()?)
-    //     },
-    //     // "sled" => {
-    //     //     Box::new(SledKvsEngine::new()?)
-    //     // }
-    //     _ => {
-    //         return Err(err_msg("Invalid engine"));
-    //     }
-    // };
-    let store = KvStore::new()?;
-    info!(log, "Initialized store");
+    let thread_pool_type = matches.value_of("THREADPOOL").unwrap_or("queued");
 
+    match thread_pool_type {
+        "naive" => {
+            start_server(log.clone(),  NaiveThreadPool::new(0)?, address, engine)?;
+        },
+        "queued" => {
+            start_server(log.clone(),  SharedQueueThreadPool::new(num_cpus::get())?, address, engine)?;
+        },
+        "rayon" => {
+            start_server(log.clone(),  RayonThreadPool::new(num_cpus::get())?, address, engine)?;
+        },
+        _ => { return Err(err_msg("Invalid thread pool type")) }
+    }
+
+    info!(log, "Server terminating");
+    Ok(())
+}
+
+fn start_server<Pool: ThreadPool>(log: Logger, tp: Pool, address: &str, engine: &str) -> Result<()> {
+    match engine {
+        "kvs" => {
+            listen_for_connections(log, address, KvStore::new()?, tp)?;
+        },
+        "sled" => {
+            listen_for_connections(log, address, SledKvsEngine::new()?, tp)?;
+        },
+        _ => { return Err(err_msg("Invalid engine type")) }
+    }
+    Ok(())
+}
+
+fn listen_for_connections<Engine: KvsEngine, Pool: ThreadPool>(mut log: Logger, address: &str, store: Engine, tp: Pool) -> Result<()> {
     info!(log, "Starting TCP server");
     let listener = TcpListener::bind(address)?;
     info!(log, "Waiting for connections...");
 
-    let tp = SharedQueueThreadPool::new(4)?;
     for stream in listener.incoming() {
         let stream: TcpStream = stream?;
         let client_addr = stream.peer_addr()?;
@@ -109,12 +131,10 @@ fn main() -> Result<()> {
         tp.spawn(move || handle_connection(log, stream, store));
         
     }
-
-    info!(log, "Server terminating");
     Ok(())
 }
 
-fn handle_connection(log: Logger, stream: TcpStream, store: KvStore) {
+fn handle_connection<Engine: KvsEngine>(log: Logger, stream: TcpStream, store: Engine) {
 
     let operation = Operation::read_from_stream(log.clone(), stream.try_clone().unwrap()).unwrap();
 
@@ -138,7 +158,7 @@ fn handle_connection(log: Logger, stream: TcpStream, store: KvStore) {
     response.write_to_stream(log, stream).unwrap();
 }
 
-fn handle_operation(log: Logger, operation: Operation, store: KvStore) -> Result<Option<String>> {
+fn handle_operation<Engine: KvsEngine>(log: Logger, operation: Operation, store: Engine) -> Result<Option<String>> {
 
     match operation {
         Operation::Set(key, value) => {

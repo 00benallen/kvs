@@ -1,3 +1,4 @@
+//! Thread pool utility to make multithreading in KVS simpler
 use std::collections::VecDeque;
 use std::sync::{
     Arc,
@@ -9,11 +10,18 @@ use std::sync::{
 };
 use crate::Result;
 
+/// Trait for a thread pool
 pub trait ThreadPool {
+
+    /// Create a new ThreadPool instance
     fn new(threads: usize) -> Result<Self> where Self: Sized;
+
+    /// Pass a job to the ThreadPool
     fn spawn<F>(&self, job: F) where F: FnOnce() + Send + 'static;
 }
 
+/// Thread pool which doesn't actually pool threads
+/// Just spawns new a thread for each job given
 pub struct NaiveThreadPool {
 
 }
@@ -52,13 +60,25 @@ impl Drop for ThreadWatcher {
     fn drop(&mut self) {
         if std::thread::panicking() {
             println!("Thread panicked, reducing number of threads spawned for watcher thread");
-            self.threads_spawned.fetch_sub(1, Ordering::AcqRel);
+            self.threads_spawned.fetch_sub(1, Ordering::Relaxed);
         } else {
             println!("Watcher dropped without thread panicking");
         }
     }
 }
 
+/// Implementation of [`ThreadPool`](trait.ThreadPool.html)
+/// 
+/// # Example
+/// ```
+/// use kvs::thread_pool::{
+///     ThreadPool,
+///     SharedQueueThreadPool
+/// };
+/// 
+/// let tp = SharedQueueThreadPool::new(4).unwrap();
+/// tp.spawn(|| println!("Job done!"));
+/// ```
 pub struct SharedQueueThreadPool {
     job_queue: JobQueue,
 }
@@ -83,20 +103,7 @@ impl ThreadPool for SharedQueueThreadPool {
         let shared_queue = job_queue.clone();
         let shared_threads_spawned = threads_spawned.clone();
         std::thread::spawn(move || {
-            loop {
-                let new_to_spawn = threads - shared_threads_spawned.load(Ordering::Acquire);
-
-                for _ in 0..new_to_spawn {
-                    println!("Spawning job thread due to restart");
-                    let shared_threads_spawned = threads_spawned.clone();
-                    let shared_queue = shared_queue.clone();
-                    shared_threads_spawned.fetch_add(1, Ordering::AcqRel);
-                    std::thread::spawn(move || {
-                        job_thread_closure(shared_queue, shared_threads_spawned)
-                    });
-                    
-                }
-            }
+            watcher_thread_closure(threads, shared_queue, shared_threads_spawned);
         });
 
 
@@ -107,6 +114,23 @@ impl ThreadPool for SharedQueueThreadPool {
 
     fn spawn<F>(&self, job: F) where F: FnOnce() + Send + 'static {
         self.job_queue.lock().expect("Could not send job to threads, job_queue could not be locked").push_front(ThreadPoolMessage::RunJob(Box::new(job)));
+    }
+}
+
+fn watcher_thread_closure(threads: usize, job_queue: JobQueue, threads_spawned: Arc<AtomicUsize>) {
+    loop {
+        let new_to_spawn = threads - threads_spawned.load(Ordering::Relaxed);
+
+        for _ in 0..new_to_spawn {
+            println!("Spawning job thread due to restart");
+            let shared_threads_spawned = threads_spawned.clone();
+            let shared_queue = job_queue.clone();
+            shared_threads_spawned.fetch_add(1, Ordering::Relaxed);
+            std::thread::spawn(move || {
+                job_thread_closure(shared_queue, shared_threads_spawned)
+            });
+            
+        }
     }
 }
 
@@ -133,21 +157,25 @@ fn job_thread_closure(job_queue: JobQueue, threads_spawned: Arc<AtomicUsize>) {
     }
 }
 
-pub struct RayonThreadPool {
-    
-}
+extern crate rayon;
+use rayon::prelude::*;
 
-impl RayonThreadPool {
-    
+/// Thread pool implementation which uses Rayon under the hood, for benchmarking
+pub struct RayonThreadPool {
+    pool: rayon::ThreadPool,
 }
 
 impl ThreadPool for RayonThreadPool {
     fn new(thread: usize) -> Result<Self> {
-        unimplemented!() // TODO
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(thread).build()?;
+
+        Ok(RayonThreadPool {
+            pool
+        })
     }
 
     fn spawn<F>(&self, job: F) where F: FnOnce() + Send + 'static {
-        unimplemented!() // TODO
+        self.pool.install(job);
     }
 }
 

@@ -1,5 +1,5 @@
 //! KvStore library for use by the kvs CLI
-//#![deny(missing_docs)]
+#![deny(missing_docs)]
 
 mod engine;
 use std::sync::{
